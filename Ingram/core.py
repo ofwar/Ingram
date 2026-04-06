@@ -56,6 +56,23 @@ class Core:
                 print('-' * 46)
                 print('\n')
 
+    def _scan_port(self, ip, port):
+        """Scan a single port: port check → fingerprint → PoC verify/exploit."""
+        if port_scan(ip, port, self.config.port_timeout):
+            logger.info(f"{ip} port {port} is open")
+            if product := fingerprint(ip, port, self.config):
+                logger.info(f"{ip}:{port} is {product}")
+                verified = False
+                for poc in self.poc_dict[product]:
+                    if results := poc.verify(ip, port):
+                        verified = True
+                        self.data.add_found()
+                        self.data.add_vulnerable(results[:6])
+                        if not self.config.disable_snapshot:
+                            self.snapshot_pipeline.put((poc.exploit, results))
+                if not verified:
+                    self.data.add_not_vulnerable([ip, str(port), product])
+
     def _scan(self, target):
         """
         params:
@@ -63,31 +80,15 @@ class Core:
         """
         items = target.split(':')
         ip = items[0]
-        ports = [items[1], ] if len(items) > 1 else self.config.ports
+        ports = [items[1]] if len(items) > 1 else self.config.ports
 
-        # 存活检测 (是否有必要)
+        # Scan all ports for this host in parallel using a child gevent pool.
+        # Each greenlet is I/O-bound (socket connect + HTTP), so spawning one
+        # per port costs almost nothing and eliminates the sequential timeout
+        # accumulation (e.g. 21 ports × 3s = 63s → ~3s worst case).
+        port_pool = geventPool(len(ports))
+        port_pool.map(lambda port: self._scan_port(ip, port), ports)
 
-        # 端口扫描
-        for port in ports:
-            if port_scan(ip, port, self.config.timeout):
-                logger.info(f"{ip} port {port} is open")
-                # 指纹
-                if product := fingerprint(ip, port, self.config):
-                    logger.info(f"{ip}:{port} is {product}")
-                    verified = False
-                    # poc verify & exploit
-                    for poc in self.poc_dict[product]:
-                        if results := poc.verify(ip, port):
-                            verified = True
-                            # found 加 1
-                            self.data.add_found()
-                            # 将验证成功的 poc 记录到 config.vulnerable 中
-                            self.data.add_vulnerable(results[:6])
-                            # snapshot
-                            if not self.config.disable_snapshot:
-                                self.snapshot_pipeline.put((poc.exploit, results))
-                    if not verified:
-                        self.data.add_not_vulnerable([ip, str(port), product])
         self.data.add_done()
         self.data.record_running_state()
 
@@ -111,7 +112,8 @@ class Core:
                 scan_pool.start(gevent.spawn(self._scan, ip))
             scan_pool.join()
 
-            # self.snapshot_pipeline_thread.join()
+            if not self.config.disable_snapshot:
+                self.snapshot_pipeline_thread.join()
             self.status_bar_thread.join()
 
             self.report()

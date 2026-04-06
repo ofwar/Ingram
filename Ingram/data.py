@@ -110,9 +110,13 @@ class Data:
         if isinstance(item, int):
             with self.done_lock:
                 self.done += item
+                if self.done % 20 == 0:
+                    self._record_running_state()
         elif isinstance(item, list):
             with self.done_lock:
                 self.done += sum(item)
+                if self.done % 20 == 0:
+                    self._record_running_state()
 
     def add_vulnerable(self, item):
         with self.vulnerable_lock:
@@ -124,11 +128,15 @@ class Data:
             self.not_vulneralbe.writelines(','.join(item) + '\n')
             self.not_vulneralbe.flush()
 
+    def _record_running_state(self):
+        """Must be called under done_lock."""
+        with open(os.path.join(self.config.out_dir, f".{self.taskid}"), 'w') as f:
+            f.write(f"{str(self.done)},{str(self.found)},{self.runned_time + timer.get_time_stamp() - self.create_time}")
+
     def record_running_state(self):
-        # 每隔 20 个记录一下当前运行状态
-        if self.done % 20 == 0:
-            with open(os.path.join(self.config.out_dir, f".{self.taskid}"), 'w') as f:
-                f.write(f"{str(self.done)},{str(self.found)},{self.runned_time + timer.get_time_stamp() - self.create_time}")
+        # Called from _scan() after add_done() — kept for the __del__ fallback.
+        with self.done_lock:
+            self._record_running_state()
 
     def __del__(self):
         try:  # if dont use try, sys.exit() may cause error
@@ -186,9 +194,13 @@ class SnapshotPipeline:
             self.task_count -= 1
 
     def process(self, core):
+        import queue as _queue
         while not core.finish():
-            exploit_func, results = self.get()
-            self.workers.submit(self._snapshot, exploit_func, results)
-            with self.task_count_lock:
-                self.task_count += 1
-            time.sleep(.1)
+            try:
+                exploit_func, results = self.pipeline.get(timeout=1)
+                self.workers.submit(self._snapshot, exploit_func, results)
+                with self.task_count_lock:
+                    self.task_count += 1
+            except _queue.Empty:
+                # No snapshot queued yet — re-check finish() and wait again.
+                pass

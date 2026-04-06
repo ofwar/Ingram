@@ -12,7 +12,7 @@ def port_scan(ip: str, port: str, timeout: int=1) -> bool:
         if s.connect_ex((ip, int(port))) == 0:
             return True
     except Exception as e:
-        logger.error(e)
+        logger.debug(e)
     finally:
         s.close()
     return False
